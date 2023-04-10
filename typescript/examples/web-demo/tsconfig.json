@@ -1,0 +1,16 @@
+{
+  "extends": "@foxglove/tsconfig/base",
+  "include": ["./**/*"],
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../..",
+    "lib": ["es2020", "dom"],
+    "jsx": "react-jsx",
+    "paths": {
+      "@mcap/core": ["../../core/src"]
+    },
+
+    // required for tsconfig-paths https://github.com/dividab/tsconfig-paths/issues/143
+    "baseUrl": "."
+  }
+}
