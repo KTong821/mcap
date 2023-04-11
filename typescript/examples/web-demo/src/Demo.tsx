@@ -203,8 +203,6 @@ function formatBytes(totalBytes: number) {
   return `${bytes.toFixed(2)} ${units[unit]!}`;
 }
 
-const hasDeviceOrientation = typeof DeviceOrientationEvent !== "undefined";
-
 function deviceOrientationToPose(event: DeviceOrientationEvent): PoseInFrame {
   // From https://github.com/mrdoob/three.js/blob/master/src/math/Quaternion.js
   const c1 = Math.cos((event.beta ?? 0) / 2);
@@ -233,6 +231,8 @@ export function Demo(): JSX.Element {
   const container = useRef<HTMLDivElement>(null);
   const state = useStore();
 
+  // Automatically start recording if we believe the device has a mouse (which means it is likely
+  // not to support orientation events)
   const [recording, setRecording] = useState(hasMouse);
   const [permissionError, setPermissionError] = useState(false);
 
@@ -244,22 +244,20 @@ export function Demo(): JSX.Element {
     const handleMouseEvent = (event: MouseEvent) => {
       state.addMouseEventMessage({ clientX: event.clientX, clientY: event.clientY });
     };
-    const handleDeviceOrientationEvent = (event: Event) => {
-      if (!hasDeviceOrientation || !(event instanceof DeviceOrientationEvent)) {
-        return;
-      }
+    const handleDeviceOrientationEvent = (event: DeviceOrientationEvent) => {
       state.addPoseMessage(deviceOrientationToPose(event));
     };
-    document.addEventListener("pointermove", handleMouseEvent);
-    document.addEventListener("deviceorientation", handleDeviceOrientationEvent);
+    window.addEventListener("pointermove", handleMouseEvent);
+    window.addEventListener("deviceorientation", handleDeviceOrientationEvent);
     return () => {
-      document.removeEventListener("pointermove", handleMouseEvent);
-      document.removeEventListener("deviceorientation", handleDeviceOrientationEvent);
+      window.removeEventListener("pointermove", handleMouseEvent);
+      window.removeEventListener("deviceorientation", handleDeviceOrientationEvent);
     };
   }, [recording, state]);
 
   const onStartRecording = useCallback(async () => {
     if (
+      typeof DeviceOrientationEvent !== "undefined" &&
       "requestPermission" in DeviceOrientationEvent &&
       typeof DeviceOrientationEvent.requestPermission === "function"
     ) {
@@ -268,7 +266,7 @@ export function Demo(): JSX.Element {
         setPermissionError(true);
       }
     }
-    // Even if a permission error was encountered, we can record mouse events
+    // Even if a permission error was encountered, we can record pointer events
     setRecording(true);
   }, []);
 
