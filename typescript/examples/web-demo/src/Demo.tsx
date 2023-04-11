@@ -203,15 +203,21 @@ function formatBytes(totalBytes: number) {
   return `${bytes.toFixed(2)} ${units[unit]!}`;
 }
 
-function deviceOrientationToPose(event: DeviceOrientationEvent): PoseInFrame {
-  // From https://github.com/mrdoob/three.js/blob/master/src/math/Quaternion.js
-  const c1 = Math.cos((event.beta ?? 0) / 2);
-  const c2 = Math.cos((event.gamma ?? 0) / 2);
-  const c3 = Math.cos((event.alpha ?? 0) / 2);
+const RADIANS_PER_DEGREE = Math.PI / 180;
 
-  const s1 = Math.sin((event.beta ?? 0) / 2);
-  const s2 = Math.sin((event.gamma ?? 0) / 2);
-  const s3 = Math.sin((event.alpha ?? 0) / 2);
+// Adapted from https://github.com/mrdoob/three.js/blob/master/src/math/Quaternion.js
+function deviceOrientationToPose(event: DeviceOrientationEvent): PoseInFrame {
+  const alpha = (event.alpha ?? 0) * RADIANS_PER_DEGREE;
+  const beta = (event.beta ?? 0) * RADIANS_PER_DEGREE;
+  const gamma = (event.gamma ?? 0) * RADIANS_PER_DEGREE;
+
+  const c1 = Math.cos(beta / 2);
+  const c2 = Math.cos(gamma / 2);
+  const c3 = Math.cos(alpha / 2);
+
+  const s1 = Math.sin(beta / 2);
+  const s2 = Math.sin(gamma / 2);
+  const s3 = Math.sin(alpha / 2);
 
   const x = s1 * c2 * c3 - c1 * s2 * s3;
   const y = c1 * s2 * c3 + s1 * c2 * s3;
@@ -219,9 +225,9 @@ function deviceOrientationToPose(event: DeviceOrientationEvent): PoseInFrame {
   const w = c1 * c2 * c3 - s1 * s2 * s3;
 
   return {
+    timestamp: fromNanoSec(BigInt(event.timeStamp) * 1_000_000n),
     frame_id: "device",
     pose: { position: { x: 0, y: 0, z: 0 }, orientation: { x, y, z, w } },
-    timestamp: fromNanoSec(BigInt(event.timeStamp) * 1_000_000n),
   };
 }
 
