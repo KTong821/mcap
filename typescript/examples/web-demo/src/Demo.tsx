@@ -233,46 +233,6 @@ function deviceOrientationToPose(event: DeviceOrientationEvent): PoseInFrame {
   };
 }
 
-// Adapted from https://github.com/mrdoob/three.js/blob/master/src/math/Matrix4.js
-function toMatrix(q: PoseInFrame["pose"]["orientation"]): DOMMatrix {
-  const { x, y, z, w } = q;
-  const x2 = x + x,
-    y2 = y + y,
-    z2 = z + z;
-  const xx = x * x2,
-    xy = x * y2,
-    xz = x * z2;
-  const yy = y * y2,
-    yz = y * z2,
-    zz = z * z2;
-  const wx = w * x2,
-    wy = w * y2,
-    wz = w * z2;
-
-  const m = new DOMMatrix([
-    1 - (yy + zz),
-    xy + wz,
-    xz - wy,
-    0,
-    //
-    xy - wz,
-    1 - (xx + zz),
-    yz + wx,
-    0,
-    //
-    xz + wy,
-    yz - wx,
-    1 - (xx + yy),
-    0,
-    //
-    0,
-    0,
-    0,
-    1,
-  ]);
-  return m;
-}
-
 const hasMouse = window.matchMedia("(hover: hover)").matches;
 
 export function Demo(): JSX.Element {
@@ -349,18 +309,6 @@ export function Demo(): JSX.Element {
           <Typography>y: {state.latestMessage.pose.orientation.y.toFixed(3)}</Typography>
           <Typography>z: {state.latestMessage.pose.orientation.z.toFixed(3)}</Typography>
           <Typography>w: {state.latestMessage.pose.orientation.w.toFixed(3)}</Typography>
-          <div style={{ perspective: 200, width: 100, height: 100 }}>
-            <div
-              style={{
-                backgroundColor: "red",
-                width: 100,
-                height: 100,
-                transform: `${toMatrix(state.latestMessage.pose.orientation).toString()}`,
-              }}
-            >
-              Abc
-            </div>
-          </div>
         </>
       )}
       {recording ? (
