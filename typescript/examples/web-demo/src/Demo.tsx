@@ -1,4 +1,6 @@
-import { fromMillis, fromNanoSec } from "@foxglove/rostime";
+// cspell:word millis
+
+import { fromMillis } from "@foxglove/rostime";
 import { PoseInFrame } from "@foxglove/schemas";
 import { PoseInFrame as PoseInFrameSchema } from "@foxglove/schemas/jsonschema";
 import zstd from "@foxglove/wasm-zstd";
