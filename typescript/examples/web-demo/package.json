@@ -63,10 +63,5 @@
     "storybook": "7.0.2",
     "tss-react": "4.8.2",
     "typescript": "4.9.5"
-  },
-  "bugs": {
-    "url": "https://github.com/foxglove/mcap/issues"
-  },
-  "readme": "ERROR: No README data found!",
-  "_id": "@foxglove/mcap-web-demo@0.0.0"
+  }
 }
