@@ -4,7 +4,12 @@ module.exports = {
     es2020: true,
   },
   ignorePatterns: ["dist"],
-  extends: ["plugin:@foxglove/base", "plugin:@foxglove/jest", "plugin:storybook/recommended"],
+  extends: [
+    "plugin:@foxglove/base",
+    "plugin:@foxglove/react",
+    "plugin:@foxglove/jest",
+    "plugin:storybook/recommended",
+  ],
   overrides: [
     {
       files: ["*.ts", "*.tsx"],

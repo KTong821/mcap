@@ -1,9 +1,13 @@
+import { fromNanoSec } from "@foxglove/rostime";
+import { PoseInFrame } from "@foxglove/schemas";
+import { PoseInFrame as PoseInFrameSchema } from "@foxglove/schemas/jsonschema";
 import zstd from "@foxglove/wasm-zstd";
 import { McapWriter } from "@mcap/core";
+import { Circle, Download } from "@mui/icons-material";
 import { Button, Typography } from "@mui/material";
 import { EventEmitter } from "eventemitter3";
 import Queue from "promise-queue";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { create } from "zustand";
 
 type RecorderEvents = {
@@ -30,6 +34,8 @@ class Recorder extends EventEmitter<RecorderEvents> {
   #queue = new Queue(/*maxPendingPromises=*/ 1);
   #mouseChannelId?: Promise<number>;
   #mouseChannelSeq = 0;
+  #poseChannelId?: Promise<number>;
+  #poseChannelSeq = 0;
 
   #blobParts: Uint8Array[] = [];
   bytesWritten = 0n;
@@ -41,7 +47,7 @@ class Recorder extends EventEmitter<RecorderEvents> {
   }
 
   #reinitializeWriter() {
-    this.#mouseChannelId = this.#queue.add(async () => {
+    const promise = this.#queue.add(async () => {
       await zstd.isLoaded;
       this.#blobParts = [];
       this.bytesWritten = 0n;
@@ -60,7 +66,8 @@ class Recorder extends EventEmitter<RecorderEvents> {
           },
         },
       });
-      await this.#writer.start({ library: "", profile: "" });
+      await this.#writer.start({ library: "@foxglove/mcap-web-demo", profile: "" });
+
       const mouseSchemaId = await this.#writer.registerSchema({
         name: "MouseEvent",
         encoding: "jsonschema",
@@ -72,9 +79,24 @@ class Recorder extends EventEmitter<RecorderEvents> {
         schemaId: mouseSchemaId,
         metadata: new Map(),
       });
+
+      const poseSchemaId = await this.#writer.registerSchema({
+        name: PoseInFrameSchema.title,
+        encoding: "jsonschema",
+        data: this.#textEncoder.encode(JSON.stringify(PoseInFrameSchema)),
+      });
+      const poseChannelId = await this.#writer.registerChannel({
+        topic: "pose",
+        messageEncoding: "json",
+        schemaId: poseSchemaId,
+        metadata: new Map(),
+      });
+
       this.#emit();
-      return mouseChannelId;
+      return { mouseChannelId, poseChannelId };
     });
+    this.#mouseChannelId = promise.then(({ mouseChannelId }) => mouseChannelId);
+    this.#poseChannelId = promise.then(({ poseChannelId }) => poseChannelId);
   }
 
   #time(): bigint {
@@ -104,6 +126,24 @@ class Recorder extends EventEmitter<RecorderEvents> {
     });
   }
 
+  async addPose(msg: PoseInFrame): Promise<void> {
+    void this.#queue.add(async () => {
+      if (!this.#writer || !this.#poseChannelId) {
+        return;
+      }
+      const now = this.#time();
+      await this.#writer.addMessage({
+        sequence: this.#poseChannelSeq++,
+        channelId: await this.#poseChannelId,
+        logTime: now,
+        publishTime: now,
+        data: this.#textEncoder.encode(JSON.stringify(msg)),
+      });
+      this.messageCount++;
+      this.#emit();
+    });
+  }
+
   async closeAndRestart(): Promise<Blob> {
     return await this.#queue.add(async () => {
       await this.#writer?.end();
@@ -118,9 +158,10 @@ type State = {
   bytesWritten: bigint;
   messageCount: number;
 
-  latestMessage: MouseEventMessage | undefined;
+  latestMessage: MouseEventMessage | PoseInFrame | undefined;
 
-  addMouseEvent(msg: MouseEventMessage): void;
+  addMouseEventMessage(msg: MouseEventMessage): void;
+  addPoseMessage(msg: PoseInFrame): void;
   closeAndRestart(): Promise<Blob>;
 };
 
@@ -137,8 +178,12 @@ const useStore = create<State>((set) => {
     bytesWritten: recorder.bytesWritten,
     messageCount: recorder.messageCount,
     latestMessage: undefined,
-    addMouseEvent(msg: MouseEventMessage) {
+    addMouseEventMessage(msg: MouseEventMessage) {
       void recorder.addMouseEvent(msg);
+      set({ latestMessage: msg });
+    },
+    addPoseMessage(msg: PoseInFrame) {
+      void recorder.addPose(msg);
       set({ latestMessage: msg });
     },
     async closeAndRestart() {
@@ -158,18 +203,73 @@ function formatBytes(totalBytes: number) {
   return `${bytes.toFixed(2)} ${units[unit]!}`;
 }
 
+const hasDeviceOrientation = typeof DeviceOrientationEvent !== "undefined";
+
+function deviceOrientationToPose(event: DeviceOrientationEvent): PoseInFrame {
+  // From https://github.com/mrdoob/three.js/blob/master/src/math/Quaternion.js
+  const c1 = Math.cos((event.beta ?? 0) / 2);
+  const c2 = Math.cos((event.gamma ?? 0) / 2);
+  const c3 = Math.cos((event.alpha ?? 0) / 2);
+
+  const s1 = Math.sin((event.beta ?? 0) / 2);
+  const s2 = Math.sin((event.gamma ?? 0) / 2);
+  const s3 = Math.sin((event.alpha ?? 0) / 2);
+
+  const x = s1 * c2 * c3 - c1 * s2 * s3;
+  const y = c1 * s2 * c3 + s1 * c2 * s3;
+  const z = c1 * c2 * s3 + s1 * s2 * c3;
+  const w = c1 * c2 * c3 - s1 * s2 * s3;
+
+  return {
+    frame_id: "device",
+    pose: { position: { x: 0, y: 0, z: 0 }, orientation: { x, y, z, w } },
+    timestamp: fromNanoSec(BigInt(event.timeStamp) * 1_000_000n),
+  };
+}
+
+const hasMouse = window.matchMedia("(hover: hover)").matches;
+
 export function Demo(): JSX.Element {
   const container = useRef<HTMLDivElement>(null);
   const state = useStore();
 
+  const [recording, setRecording] = useState(hasMouse);
+  const [permissionError, setPermissionError] = useState(false);
+
   useEffect(() => {
+    if (!recording) {
+      return;
+    }
+
     const handleMouseEvent = (event: MouseEvent) => {
-      state.addMouseEvent({ clientX: event.clientX, clientY: event.clientY });
+      state.addMouseEventMessage({ clientX: event.clientX, clientY: event.clientY });
     };
-    document.addEventListener("mousemove", handleMouseEvent);
+    const handleDeviceOrientationEvent = (event: Event) => {
+      if (!hasDeviceOrientation || !(event instanceof DeviceOrientationEvent)) {
+        return;
+      }
+      state.addPoseMessage(deviceOrientationToPose(event));
+    };
+    document.addEventListener("pointermove", handleMouseEvent);
+    document.addEventListener("deviceorientation", handleDeviceOrientationEvent);
     return () => {
-      document.removeEventListener("mousemove", handleMouseEvent);
+      document.removeEventListener("pointermove", handleMouseEvent);
+      document.removeEventListener("deviceorientation", handleDeviceOrientationEvent);
     };
+  }, [recording, state]);
+
+  const onStartRecording = useCallback(async () => {
+    if (
+      "requestPermission" in DeviceOrientationEvent &&
+      typeof DeviceOrientationEvent.requestPermission === "function"
+    ) {
+      const result: unknown = await DeviceOrientationEvent.requestPermission();
+      if (result !== "granted") {
+        setPermissionError(true);
+      }
+    }
+    // Even if a permission error was encountered, we can record mouse events
+    setRecording(true);
   }, []);
 
   const onDownloadClick = useCallback(() => {
@@ -184,20 +284,46 @@ export function Demo(): JSX.Element {
       document.body.removeChild(link);
       // URL.revokeObjectURL(url);
     })();
-  }, []);
+  }, [state]);
 
   return (
     <div ref={container}>
-      <Typography variant="body1">Messages: {state.messageCount}</Typography>
-      {state.latestMessage && (
+      <Typography>Messages: {state.messageCount}</Typography>
+      {state.latestMessage && "clientX" in state.latestMessage && (
         <>
-          <Typography variant="body1">clientX: {state.latestMessage.clientX}</Typography>
-          <Typography variant="body1">clientY: {state.latestMessage.clientY}</Typography>
+          <Typography fontWeight="bold">Mouse</Typography>
+          <Typography>clientX: {state.latestMessage.clientX}</Typography>
+          <Typography>clientY: {state.latestMessage.clientY}</Typography>
         </>
       )}
-      <Button variant="contained" onClick={onDownloadClick}>
-        Download ({formatBytes(Number(state.bytesWritten))})
-      </Button>
+      {state.latestMessage && "frame_id" in state.latestMessage && (
+        <>
+          <Typography fontWeight="bold">Pose</Typography>
+          <Typography>x: {state.latestMessage.pose.orientation.x}</Typography>
+          <Typography>y: {state.latestMessage.pose.orientation.y}</Typography>
+          <Typography>z: {state.latestMessage.pose.orientation.z}</Typography>
+          <Typography>w: {state.latestMessage.pose.orientation.w}</Typography>
+        </>
+      )}
+      {recording ? (
+        <Button variant="contained" onClick={onDownloadClick} startIcon={<Download />}>
+          Download ({formatBytes(Number(state.bytesWritten))})
+        </Button>
+      ) : (
+        <Button
+          variant="contained"
+          color="error"
+          onClick={() => void onStartRecording()}
+          startIcon={<Circle />}
+        >
+          Record
+        </Button>
+      )}
+      {permissionError && (
+        <Typography component="div" variant="caption" color="error">
+          Allow permission to use device orientation
+        </Typography>
+      )}
     </div>
   );
 }
