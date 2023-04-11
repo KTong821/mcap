@@ -249,9 +249,19 @@ jobs:
       - run: yarn workspace @foxglove/mcap-example-basicwriter lint:ci
       - run: yarn workspace @foxglove/mcap-example-flatbufferswriter typecheck
       - run: yarn workspace @foxglove/mcap-example-flatbufferswriter typecheck
+
+  typescript-web-demo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 16.x
+          cache: yarn
+      - run: corepack enable && yarn install --immutable
+
       - run: yarn workspace @foxglove/mcap-web-demo lint:ci
       - run: yarn workspace @foxglove/mcap-web-demo typecheck
-
       - uses: chromaui/action@v1
         # Chromatic only runs on pushes or pulls to our source repo
         if: ${{ github.event.repository.full_name == 'foxglove/mcap' }}
