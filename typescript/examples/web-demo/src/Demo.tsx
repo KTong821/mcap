@@ -303,10 +303,10 @@ export function Demo(): JSX.Element {
       {state.latestMessage && "frame_id" in state.latestMessage && (
         <>
           <Typography fontWeight="bold">Pose</Typography>
-          <Typography>x: {state.latestMessage.pose.orientation.x}</Typography>
-          <Typography>y: {state.latestMessage.pose.orientation.y}</Typography>
-          <Typography>z: {state.latestMessage.pose.orientation.z}</Typography>
-          <Typography>w: {state.latestMessage.pose.orientation.w}</Typography>
+          <Typography>x: {state.latestMessage.pose.orientation.x.toFixed(3)}</Typography>
+          <Typography>y: {state.latestMessage.pose.orientation.y.toFixed(3)}</Typography>
+          <Typography>z: {state.latestMessage.pose.orientation.z.toFixed(3)}</Typography>
+          <Typography>w: {state.latestMessage.pose.orientation.w.toFixed(3)}</Typography>
         </>
       )}
       {recording ? (
