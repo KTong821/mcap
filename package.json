@@ -19,6 +19,7 @@
   },
   "packageManager": "yarn@3.5.0",
   "devDependencies": {
+    "chromatic": "6.17.3",
     "cspell": "^6.26.3",
     "prettier": "^2.8.4",
     "tailwindcss": "^3.2.7",

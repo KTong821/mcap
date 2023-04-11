@@ -1,16 +1,10 @@
-import { useEffect, useRef, useState } from "react";
-import { IWritable, McapWriter } from "@mcap/core";
 import zstd from "@foxglove/wasm-zstd";
+import { McapWriter } from "@mcap/core";
+import { Button, Typography } from "@mui/material";
 import { EventEmitter } from "eventemitter3";
 import Queue from "promise-queue";
-import { create, createStore } from "zustand";
-
-// type RecordingButtonProps = {
-//   state: "idle"|"recording";
-// }
-// function RecordingButton(props:RecordingButtonProps): JSX.Element {
-
-// }
+import { useCallback, useEffect, useRef } from "react";
+import { create } from "zustand";
 
 type RecorderEvents = {
   update: () => void;
@@ -31,43 +25,55 @@ const MouseEventSchema = {
 
 class Recorder extends EventEmitter<RecorderEvents> {
   #textEncoder = new TextEncoder();
-  #writer: McapWriter;
+  #writer?: McapWriter;
   /** Used to ensure all operations on the McapWriter are sequential */
   #queue = new Queue(/*maxPendingPromises=*/ 1);
-  #mouseChannelId: Promise<number>;
+  #mouseChannelId?: Promise<number>;
   #mouseChannelSeq = 0;
 
+  #blobParts: Uint8Array[] = [];
   bytesWritten = 0n;
   messageCount = 0;
 
   constructor() {
     super();
-    this.#queue.add(() => zstd.isLoaded);
-    this.#writer = new McapWriter({
-      compressChunk(data) {
-        return { compression: "zstd", compressedData: zstd.compress(data) };
-      },
-      writable: {
-        position: () => this.bytesWritten,
-        write: async (buffer: Uint8Array) => {
-          this.bytesWritten += BigInt(buffer.byteLength);
-        },
-      },
-    });
+    this.#reinitializeWriter();
+  }
 
+  #reinitializeWriter() {
     this.#mouseChannelId = this.#queue.add(async () => {
-      const schemaId = await this.#writer.registerSchema({
+      await zstd.isLoaded;
+      this.#blobParts = [];
+      this.bytesWritten = 0n;
+      this.messageCount = 0;
+      this.#writer = new McapWriter({
+        chunkSize: 1024,
+        compressChunk(data) {
+          return { compression: "zstd", compressedData: zstd.compress(data) };
+        },
+        writable: {
+          position: () => this.bytesWritten,
+          write: async (buffer: Uint8Array) => {
+            this.#blobParts.push(buffer);
+            this.bytesWritten += BigInt(buffer.byteLength);
+            this.#emit();
+          },
+        },
+      });
+      await this.#writer.start({ library: "", profile: "" });
+      const mouseSchemaId = await this.#writer.registerSchema({
         name: "MouseEvent",
-        encoding: "json",
+        encoding: "jsonschema",
         data: this.#textEncoder.encode(JSON.stringify(MouseEventSchema)),
       });
-      const channelId = await this.#writer.registerChannel({
+      const mouseChannelId = await this.#writer.registerChannel({
         topic: "mouse",
         messageEncoding: "json",
-        schemaId: schemaId,
+        schemaId: mouseSchemaId,
         metadata: new Map(),
       });
-      return channelId;
+      this.#emit();
+      return mouseChannelId;
     });
   }
 
@@ -81,16 +87,29 @@ class Recorder extends EventEmitter<RecorderEvents> {
   }
 
   async addMouseEvent(msg: MouseEventMessage): Promise<void> {
-    this.#queue.add(async () => {
+    void this.#queue.add(async () => {
+      if (!this.#writer || !this.#mouseChannelId) {
+        return;
+      }
       const now = this.#time();
-      this.#writer.addMessage({
+      await this.#writer.addMessage({
         sequence: this.#mouseChannelSeq++,
         channelId: await this.#mouseChannelId,
         logTime: now,
         publishTime: now,
         data: this.#textEncoder.encode(JSON.stringify(msg)),
       });
+      this.messageCount++;
       this.#emit();
+    });
+  }
+
+  async closeAndRestart(): Promise<Blob> {
+    return await this.#queue.add(async () => {
+      await this.#writer?.end();
+      const blob = new Blob(this.#blobParts);
+      this.#reinitializeWriter();
+      return blob;
     });
   }
 }
@@ -99,7 +118,10 @@ type State = {
   bytesWritten: bigint;
   messageCount: number;
 
+  latestMessage: MouseEventMessage | undefined;
+
   addMouseEvent(msg: MouseEventMessage): void;
+  closeAndRestart(): Promise<Blob>;
 };
 
 const useStore = create<State>((set) => {
@@ -114,13 +136,29 @@ const useStore = create<State>((set) => {
   return {
     bytesWritten: recorder.bytesWritten,
     messageCount: recorder.messageCount,
+    latestMessage: undefined,
     addMouseEvent(msg: MouseEventMessage) {
       void recorder.addMouseEvent(msg);
+      set({ latestMessage: msg });
+    },
+    async closeAndRestart() {
+      return await recorder.closeAndRestart();
     },
   };
 });
 
-export function Demo() {
+function formatBytes(totalBytes: number) {
+  const units = ["B", "kiB", "MiB", "GiB", "TiB"];
+  let bytes = totalBytes;
+  let unit = 0;
+  while (unit + 1 < units.length && bytes >= 1024) {
+    bytes /= 1024;
+    unit++;
+  }
+  return `${bytes.toFixed(2)} ${units[unit]!}`;
+}
+
+export function Demo(): JSX.Element {
   const container = useRef<HTMLDivElement>(null);
   const state = useStore();
 
@@ -134,5 +172,32 @@ export function Demo() {
     };
   }, []);
 
-  return <div ref={container}>Messages: {state.messageCount}</div>;
+  const onDownloadClick = useCallback(() => {
+    void (async () => {
+      const blob = await state.closeAndRestart();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "demo.mcap";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      // URL.revokeObjectURL(url);
+    })();
+  }, []);
+
+  return (
+    <div ref={container}>
+      <Typography variant="body1">Messages: {state.messageCount}</Typography>
+      {state.latestMessage && (
+        <>
+          <Typography variant="body1">clientX: {state.latestMessage.clientX}</Typography>
+          <Typography variant="body1">clientY: {state.latestMessage.clientY}</Typography>
+        </>
+      )}
+      <Button variant="contained" onClick={onDownloadClick}>
+        Download ({formatBytes(Number(state.bytesWritten))})
+      </Button>
+    </div>
+  );
 }

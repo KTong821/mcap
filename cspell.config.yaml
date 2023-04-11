@@ -169,3 +169,7 @@ overrides:
   - filename: "docs/**"
     words:
       - plex
+
+  - filename: "typescript/**"
+    words:
+      - zustand
