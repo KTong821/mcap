@@ -440,7 +440,7 @@ export function Demo(): JSX.Element {
       />
       {recordingVideo && !videoPermissionError && (
         <div style={{ width: 150, height: 100, position: "relative" }}>
-          <video ref={videoRef} style={{ width: "100%", height: "100%" }} />
+          <video ref={videoRef} style={{ width: "100%", height: "100%" }} muted playsInline />
           {!videoStarted && (
             <div
               style={{
