@@ -26,6 +26,7 @@
     "@foxglove/wasm-zstd": "^1.0.1",
     "@mcap/core": "^1.2.1",
     "eventemitter3": "^5.0.0",
+    "js-base64": "3.7.5",
     "promise-queue": "^2.2.5",
     "zustand": "^4.3.7"
   },

@@ -2543,6 +2543,7 @@ __metadata:
     eslint-plugin-react-hooks: 4.6.0
     eslint-plugin-storybook: 0.6.11
     eventemitter3: ^5.0.0
+    js-base64: 3.7.5
     prettier: 2.8.4
     promise-queue: ^2.2.5
     react: 18.2.0
@@ -10622,6 +10623,13 @@ __metadata:
   bin:
     jest: bin/jest.js
   checksum: 084d10d1ceaade3c40e6d3bbd71b9b71b8919ba6fbd6f1f6699bdc259a6ba2f7350c7ccbfa10c11f7e3e01662853650a6244210179542fe4ba87e77dc3f3109f
+  languageName: node
+  linkType: hard
+
+"js-base64@npm:3.7.5":
+  version: 3.7.5
+  resolution: "js-base64@npm:3.7.5"
+  checksum: 67a78c8b1c47b73f1c6fba1957e9fe6fd9dc78ac93ac46cc2e43472dcb9cf150d126fb0e593192e88e0497354fa634d17d255add7cc6ee3c7b4d29870faa8e18
   languageName: node
   linkType: hard
 

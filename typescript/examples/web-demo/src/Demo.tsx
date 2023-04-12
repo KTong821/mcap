@@ -1,13 +1,17 @@
 // cspell:word millis
 
-import { fromMillis } from "@foxglove/rostime";
-import { PoseInFrame } from "@foxglove/schemas";
-import { PoseInFrame as PoseInFrameSchema } from "@foxglove/schemas/jsonschema";
+import { fromMillis, fromNanoSec } from "@foxglove/rostime";
+import { PoseInFrame, CompressedImage } from "@foxglove/schemas";
+import {
+  PoseInFrame as PoseInFrameSchema,
+  CompressedImage as CompressedImageSchema,
+} from "@foxglove/schemas/jsonschema";
 import zstd from "@foxglove/wasm-zstd";
 import { McapWriter } from "@mcap/core";
 import { Circle, Download } from "@mui/icons-material";
-import { Button, Typography } from "@mui/material";
+import { Button, CircularProgress, FormControlLabel, Switch, Typography } from "@mui/material";
 import { EventEmitter } from "eventemitter3";
+import { Base64 } from "js-base64";
 import Queue from "promise-queue";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { create } from "zustand";
@@ -38,6 +42,8 @@ class Recorder extends EventEmitter<RecorderEvents> {
   #mouseChannelSeq = 0;
   #poseChannelId?: Promise<number>;
   #poseChannelSeq = 0;
+  #cameraChannelId?: Promise<number>;
+  #cameraChannelSeq = 0;
 
   #blobParts: Uint8Array[] = [];
   bytesWritten = 0n;
@@ -94,11 +100,24 @@ class Recorder extends EventEmitter<RecorderEvents> {
         metadata: new Map(),
       });
 
+      const cameraSchemaId = await this.#writer.registerSchema({
+        name: CompressedImageSchema.title,
+        encoding: "jsonschema",
+        data: this.#textEncoder.encode(JSON.stringify(CompressedImageSchema)),
+      });
+      const cameraChannelId = await this.#writer.registerChannel({
+        topic: "camera",
+        messageEncoding: "json",
+        schemaId: cameraSchemaId,
+        metadata: new Map(),
+      });
+
       this.#emit();
-      return { mouseChannelId, poseChannelId };
+      return { mouseChannelId, poseChannelId, cameraChannelId };
     });
     this.#mouseChannelId = promise.then(({ mouseChannelId }) => mouseChannelId);
     this.#poseChannelId = promise.then(({ poseChannelId }) => poseChannelId);
+    this.#cameraChannelId = promise.then(({ cameraChannelId }) => cameraChannelId);
   }
 
   #time(): bigint {
@@ -146,6 +165,32 @@ class Recorder extends EventEmitter<RecorderEvents> {
     });
   }
 
+  async addCameraImage(blob: Blob): Promise<void> {
+    void this.#queue.add(async () => {
+      if (!this.#writer || !this.#cameraChannelId) {
+        return;
+      }
+      const now = this.#time();
+      const msg: Omit<CompressedImage, "data"> & { data: string } = {
+        timestamp: fromNanoSec(now),
+        frame_id: "camera",
+        data: Base64.fromUint8Array(new Uint8Array(await blob.arrayBuffer())),
+        format: blob.type,
+      };
+      this.messageCount++;
+      this.#emit();
+      await this.#writer.addMessage({
+        sequence: this.#cameraChannelSeq++,
+        channelId: await this.#cameraChannelId,
+        logTime: now,
+        publishTime: now,
+        data: this.#textEncoder.encode(JSON.stringify(msg)),
+      });
+      this.messageCount++;
+      this.#emit();
+    });
+  }
+
   async closeAndRestart(): Promise<Blob> {
     return await this.#queue.add(async () => {
       await this.#writer?.end();
@@ -162,9 +207,10 @@ type State = {
 
   latestMessage: MouseEventMessage | PoseInFrame | undefined;
 
-  addMouseEventMessage(msg: MouseEventMessage): void;
-  addPoseMessage(msg: PoseInFrame): void;
-  closeAndRestart(): Promise<Blob>;
+  addMouseEventMessage: (msg: MouseEventMessage) => void;
+  addPoseMessage: (msg: PoseInFrame) => void;
+  addCameraImage: (blob: Blob) => void;
+  closeAndRestart: () => Promise<Blob>;
 };
 
 const useStore = create<State>((set) => {
@@ -187,6 +233,9 @@ const useStore = create<State>((set) => {
     addPoseMessage(msg: PoseInFrame) {
       void recorder.addPose(msg);
       set({ latestMessage: msg });
+    },
+    addCameraImage(blob: Blob) {
+      void recorder.addCameraImage(blob);
     },
     async closeAndRestart() {
       return await recorder.closeAndRestart();
@@ -242,7 +291,14 @@ export function Demo(): JSX.Element {
   // Automatically start recording if we believe the device has a mouse (which means it is likely
   // not to support orientation events)
   const [recording, setRecording] = useState(hasMouse);
-  const [permissionError, setPermissionError] = useState(false);
+  const [orientationPermissionError, setOrientationPermissionError] = useState(false);
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [recordingVideo, setRecordingVideo] = useState(false);
+  const [videoStarted, setVideoStarted] = useState(false);
+  const [videoPermissionError, setVideoPermissionError] = useState(false);
+
+  const { addCameraImage, addMouseEventMessage, addPoseMessage } = state;
 
   useEffect(() => {
     if (!recording) {
@@ -250,10 +306,10 @@ export function Demo(): JSX.Element {
     }
 
     const handleMouseEvent = (event: MouseEvent) => {
-      state.addMouseEventMessage({ clientX: event.clientX, clientY: event.clientY });
+      addMouseEventMessage({ clientX: event.clientX, clientY: event.clientY });
     };
     const handleDeviceOrientationEvent = (event: DeviceOrientationEvent) => {
-      state.addPoseMessage(deviceOrientationToPose(event));
+      addPoseMessage(deviceOrientationToPose(event));
     };
     window.addEventListener("pointermove", handleMouseEvent);
     window.addEventListener("deviceorientation", handleDeviceOrientationEvent);
@@ -261,7 +317,82 @@ export function Demo(): JSX.Element {
       window.removeEventListener("pointermove", handleMouseEvent);
       window.removeEventListener("deviceorientation", handleDeviceOrientationEvent);
     };
-  }, [recording, state]);
+  }, [addMouseEventMessage, addPoseMessage, recording]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!recordingVideo || !video) {
+      return;
+    }
+    const controller = new AbortController();
+    void (async (signal: AbortSignal) => {
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      } catch (error) {
+        setVideoPermissionError(true);
+        return;
+      }
+      if (signal.aborted) {
+        return;
+      }
+      video.srcObject = stream;
+      try {
+        await video.play();
+      } catch (error) {
+        // Interrupted: https://developer.chrome.com/blog/play-request-was-interrupted/
+        return;
+      }
+
+      if (!signal.aborted) {
+        setVideoStarted(true);
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext("2d");
+
+      let framePromise: Promise<void> | undefined;
+      const frameDurationSec = 1 / 30;
+      const interval = setInterval(() => {
+        if (framePromise) {
+          // last frame is not yet complete, skip frame
+          return;
+        }
+        framePromise = new Promise((resolve) => {
+          ctx?.drawImage(video, 0, 0);
+          canvas.toBlob(
+            (blob) => {
+              if (blob && !signal.aborted) {
+                addCameraImage(blob);
+              }
+              resolve();
+              framePromise = undefined;
+            },
+            "image/jpeg",
+            0.8,
+          );
+        });
+      }, frameDurationSec * 1000);
+
+      const cleanup = () => {
+        clearInterval(interval);
+        for (const track of stream.getTracks()) {
+          track.stop();
+        }
+      };
+      if (signal.aborted) {
+        cleanup();
+      } else {
+        signal.addEventListener("abort", cleanup);
+      }
+    })(controller.signal);
+
+    return () => {
+      controller.abort();
+    };
+  }, [addCameraImage, recordingVideo]);
 
   const onStartRecording = useCallback(async () => {
     if (
@@ -271,7 +402,7 @@ export function Demo(): JSX.Element {
     ) {
       const result: unknown = await DeviceOrientationEvent.requestPermission();
       if (result !== "granted") {
-        setPermissionError(true);
+        setOrientationPermissionError(true);
       }
     }
     // Even if a permission error was encountered, we can record pointer events
@@ -288,12 +419,41 @@ export function Demo(): JSX.Element {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      // URL.revokeObjectURL(url);
+      URL.revokeObjectURL(url);
     })();
   }, [state]);
 
   return (
     <div ref={container}>
+      <FormControlLabel
+        control={
+          <Switch
+            checked={recordingVideo}
+            onChange={(_event, checked) => {
+              setVideoStarted(false);
+              setRecordingVideo(checked);
+            }}
+          />
+        }
+        label="Camera"
+      />
+      {recordingVideo && !videoPermissionError && (
+        <div style={{ width: 150, height: 100, position: "relative" }}>
+          <video ref={videoRef} style={{ width: "100%", height: "100%" }} />
+          {!videoStarted && (
+            <div
+              style={{
+                position: "absolute",
+                left: "50%",
+                top: "50%",
+                transform: `translate(-50%,-50%)`,
+              }}
+            >
+              <CircularProgress />
+            </div>
+          )}
+        </div>
+      )}
       <Typography>Messages: {state.messageCount}</Typography>
       {state.latestMessage && "clientX" in state.latestMessage && (
         <>
@@ -325,9 +485,14 @@ export function Demo(): JSX.Element {
           Record
         </Button>
       )}
-      {permissionError && (
+      {orientationPermissionError && (
         <Typography component="div" variant="caption" color="error">
           Allow permission to use device orientation
+        </Typography>
+      )}
+      {videoPermissionError && (
+        <Typography component="div" variant="caption" color="error">
+          Allow permission to record camera images
         </Typography>
       )}
     </div>
