@@ -434,6 +434,7 @@ export function Demo(): JSX.Element {
               setVideoStarted(false);
               setRecordingVideo(checked);
             }}
+            disabled={!recording}
           />
         }
         label="Camera"
