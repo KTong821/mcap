@@ -341,6 +341,7 @@ export function Demo(): JSX.Element {
         await video.play();
       } catch (error) {
         // Interrupted: https://developer.chrome.com/blog/play-request-was-interrupted/
+        console.error(error);
         return;
       }
 
