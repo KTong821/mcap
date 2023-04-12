@@ -21,13 +21,13 @@
     "build-storybook": "storybook build"
   },
   "dependencies": {
-    "@foxglove/rostime": "1.1.2",
-    "@foxglove/schemas": "1.2.0",
+    "@foxglove/rostime": "^1.1.2",
+    "@foxglove/schemas": "^1.2.0",
     "@foxglove/wasm-zstd": "^1.0.1",
     "@mcap/core": "^1.2.1",
     "eventemitter3": "^5.0.0",
-    "js-base64": "3.7.5",
     "promise-queue": "^2.2.5",
+    "protobufjs": "^7.2.3",
     "zustand": "^4.3.7"
   },
   "peerDependencies": {
