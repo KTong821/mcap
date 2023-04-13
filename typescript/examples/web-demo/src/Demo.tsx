@@ -29,10 +29,6 @@ function toProtobufTime({ sec, nsec }: Time): { seconds: number | bigint; nanos:
   return { seconds: sec, nanos: nsec };
 }
 
-type RecorderEvents = {
-  update: () => void;
-};
-
 type MouseEventMessage = {
   clientX: number;
   clientY: number;
@@ -108,6 +104,11 @@ async function addProtobufChannel(
   return { rootType, id };
 }
 
+type RecorderEvents = {
+  update: () => void;
+  chunk: () => void;
+};
+
 class Recorder extends EventEmitter<RecorderEvents> {
   #textEncoder = new TextEncoder();
   #writer?: McapWriter;
@@ -136,7 +137,7 @@ class Recorder extends EventEmitter<RecorderEvents> {
       this.bytesWritten = 0n;
       this.messageCount = 0;
       this.#writer = new McapWriter({
-        chunkSize: 1024,
+        chunkSize: 5 * 1024,
         compressChunk(data) {
           return { compression: "zstd", compressedData: zstd.compress(data) };
         },
@@ -146,6 +147,7 @@ class Recorder extends EventEmitter<RecorderEvents> {
             this.#blobParts.push(buffer);
             this.bytesWritten += BigInt(buffer.byteLength);
             this.#emit();
+            this.emit("chunk");
           },
         },
       });
@@ -273,6 +275,8 @@ type State = {
   addPoseMessage: (msg: ProtobufObject<PoseInFrame>) => void;
   addCameraImage: (blob: Blob) => void;
   closeAndRestart: () => Promise<Blob>;
+
+  addChunkListener: (listener: () => void) => () => void;
 };
 
 const useStore = create<State>((set) => {
@@ -301,6 +305,12 @@ const useStore = create<State>((set) => {
     },
     async closeAndRestart() {
       return await recorder.closeAndRestart();
+    },
+    addChunkListener(listener: () => void) {
+      recorder.addListener("chunk", listener);
+      return () => {
+        recorder.removeListener("chunk", listener);
+      };
     },
   };
 });
@@ -347,7 +357,6 @@ function deviceOrientationToPose(event: DeviceOrientationEvent): ProtobufObject<
 const hasMouse = window.matchMedia("(hover: hover)").matches;
 
 export function Demo(): JSX.Element {
-  const container = useRef<HTMLDivElement>(null);
   const state = useStore();
 
   // Automatically start recording if we believe the device has a mouse (which means it is likely
@@ -360,7 +369,62 @@ export function Demo(): JSX.Element {
   const [videoStarted, setVideoStarted] = useState(false);
   const [videoPermissionError, setVideoPermissionError] = useState(false);
 
-  const { addCameraImage, addMouseEventMessage, addPoseMessage } = state;
+  const chunkIconRef = useRef<HTMLDivElement>(null);
+  const fileIconRef = useRef<HTMLDivElement>(null);
+
+  const { addCameraImage, addMouseEventMessage, addPoseMessage, addChunkListener } = state;
+
+  const messagesSinceLastChunkRef = useRef(0);
+  const animateParticle = useCallback(
+    (start: { x: number; y: number } | HTMLElement | null, endElement?: HTMLElement | null) => {
+      if (!start || !endElement) {
+        return;
+      }
+      const endRect = endElement.getBoundingClientRect();
+
+      const particle = document.createElement("div");
+      particle.style.width = "5px";
+      particle.style.height = "5px";
+      particle.style.backgroundColor = "rgba(0, 0, 255, 0.5)";
+      particle.style.borderRadius = "50%";
+      particle.style.position = "absolute";
+      particle.style.top = "0";
+      particle.style.left = "0";
+      document.body.appendChild(particle);
+
+      let startX, startY;
+      if (start instanceof HTMLElement) {
+        const startRect = start.getBoundingClientRect();
+        startX = startRect.left + Math.random() * startRect.width;
+        startY = startRect.top + Math.random() * startRect.height;
+      } else {
+        startX = start.x;
+        startY = start.y;
+      }
+      const endX = endRect.left + (0.5 + 0.2 * (Math.random() - 0.5)) * endRect.width;
+      const endY = endRect.top + (0.5 + 0.2 * (Math.random() - 0.5)) * endRect.height;
+      const animation = particle.animate(
+        [
+          { transform: `translate(${startX}px, ${startY}px)` },
+          { transform: `translate(${endX}px, ${endY}px)` },
+        ],
+        { duration: 500 },
+      );
+      animation.onfinish = () => {
+        particle.remove();
+      };
+    },
+    [],
+  );
+
+  useEffect(() => {
+    return addChunkListener(() => {
+      for (let i = 0; i < messagesSinceLastChunkRef.current; i++) {
+        animateParticle(chunkIconRef.current, fileIconRef.current);
+      }
+      messagesSinceLastChunkRef.current = 0;
+    });
+  }, [addChunkListener, animateParticle]);
 
   useEffect(() => {
     if (!recording) {
@@ -369,6 +433,8 @@ export function Demo(): JSX.Element {
 
     const handleMouseEvent = (event: MouseEvent) => {
       addMouseEventMessage({ clientX: event.clientX, clientY: event.clientY });
+      animateParticle({ x: event.clientX, y: event.clientY }, chunkIconRef.current);
+      messagesSinceLastChunkRef.current++;
     };
     const handleDeviceOrientationEvent = (event: DeviceOrientationEvent) => {
       addPoseMessage(deviceOrientationToPose(event));
@@ -379,7 +445,7 @@ export function Demo(): JSX.Element {
       window.removeEventListener("pointermove", handleMouseEvent);
       window.removeEventListener("deviceorientation", handleDeviceOrientationEvent);
     };
-  }, [addMouseEventMessage, addPoseMessage, recording]);
+  }, [addMouseEventMessage, addPoseMessage, animateParticle, recording]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -429,6 +495,8 @@ export function Demo(): JSX.Element {
             (blob) => {
               if (blob && !signal.aborted) {
                 addCameraImage(blob);
+                animateParticle(video, chunkIconRef.current);
+                messagesSinceLastChunkRef.current++;
               }
               resolve();
               framePromise = undefined;
@@ -455,7 +523,7 @@ export function Demo(): JSX.Element {
     return () => {
       controller.abort();
     };
-  }, [addCameraImage, recordingVideo]);
+  }, [addCameraImage, animateParticle, recordingVideo]);
 
   const onStartRecording = useCallback(async () => {
     if (
@@ -487,78 +555,92 @@ export function Demo(): JSX.Element {
   }, [state]);
 
   return (
-    <div ref={container}>
-      <FormControlLabel
-        control={
-          <Switch
-            checked={recordingVideo}
-            onChange={(_event, checked) => {
-              setVideoStarted(false);
-              setRecordingVideo(checked);
-            }}
-            disabled={!recording}
-          />
-        }
-        label="Camera"
-      />
-      {recordingVideo && !videoPermissionError && (
-        <div style={{ width: 150, height: 100, position: "relative" }}>
-          <video ref={videoRef} style={{ width: "100%", height: "100%" }} muted playsInline />
-          {!videoStarted && (
-            <div
-              style={{
-                position: "absolute",
-                left: "50%",
-                top: "50%",
-                transform: `translate(-50%,-50%)`,
+    <div style={{ display: "flex" }}>
+      <div>
+        <FormControlLabel
+          control={
+            <Switch
+              checked={recordingVideo}
+              onChange={(_event, checked) => {
+                setVideoStarted(false);
+                setRecordingVideo(checked);
               }}
-            >
-              <CircularProgress />
-            </div>
-          )}
-        </div>
-      )}
-      <Typography>Messages: {state.messageCount}</Typography>
-      {state.latestMessage && "clientX" in state.latestMessage && (
-        <>
-          <Typography fontWeight="bold">Mouse</Typography>
-          <Typography>clientX: {state.latestMessage.clientX}</Typography>
-          <Typography>clientY: {state.latestMessage.clientY}</Typography>
-        </>
-      )}
-      {state.latestMessage && "frame_id" in state.latestMessage && (
-        <>
-          <Typography fontWeight="bold">Pose</Typography>
-          <Typography>x: {state.latestMessage.pose.orientation.x.toFixed(3)}</Typography>
-          <Typography>y: {state.latestMessage.pose.orientation.y.toFixed(3)}</Typography>
-          <Typography>z: {state.latestMessage.pose.orientation.z.toFixed(3)}</Typography>
-          <Typography>w: {state.latestMessage.pose.orientation.w.toFixed(3)}</Typography>
-        </>
-      )}
-      {recording ? (
-        <Button variant="contained" onClick={onDownloadClick} startIcon={<Download />}>
-          Download ({formatBytes(Number(state.bytesWritten))})
-        </Button>
-      ) : (
-        <Button
-          variant="contained"
-          color="error"
-          onClick={() => void onStartRecording()}
-          startIcon={<Circle />}
-        >
-          Record
-        </Button>
-      )}
-      {orientationPermissionError && (
-        <Typography component="div" variant="caption" color="error">
-          Allow permission to use device orientation
-        </Typography>
-      )}
-      {videoPermissionError && (
-        <Typography component="div" variant="caption" color="error">
-          Allow permission to record camera images
-        </Typography>
-      )}
+              disabled={!recording}
+            />
+          }
+          label="Camera"
+        />
+        {recordingVideo && !videoPermissionError && (
+          <div style={{ width: 150, height: 100, position: "relative" }}>
+            <video ref={videoRef} style={{ width: "100%", height: "100%" }} muted playsInline />
+            {!videoStarted && (
+              <div
+                style={{
+                  position: "absolute",
+                  left: "50%",
+                  top: "50%",
+                  transform: `translate(-50%,-50%)`,
+                }}
+              >
+                <CircularProgress />
+              </div>
+            )}
+          </div>
+        )}
+        <Typography>Messages: {state.messageCount}</Typography>
+        {state.latestMessage && "clientX" in state.latestMessage && (
+          <>
+            <Typography fontWeight="bold">Mouse</Typography>
+            <Typography>clientX: {state.latestMessage.clientX}</Typography>
+            <Typography>clientY: {state.latestMessage.clientY}</Typography>
+          </>
+        )}
+        {state.latestMessage && "frame_id" in state.latestMessage && (
+          <>
+            <Typography fontWeight="bold">Pose</Typography>
+            <Typography>x: {state.latestMessage.pose.orientation.x.toFixed(3)}</Typography>
+            <Typography>y: {state.latestMessage.pose.orientation.y.toFixed(3)}</Typography>
+            <Typography>z: {state.latestMessage.pose.orientation.z.toFixed(3)}</Typography>
+            <Typography>w: {state.latestMessage.pose.orientation.w.toFixed(3)}</Typography>
+          </>
+        )}
+        {recording ? (
+          <Button variant="contained" onClick={onDownloadClick} startIcon={<Download />}>
+            Download ({formatBytes(Number(state.bytesWritten))})
+          </Button>
+        ) : (
+          <Button
+            variant="contained"
+            color="error"
+            onClick={() => void onStartRecording()}
+            startIcon={<Circle />}
+          >
+            Record
+          </Button>
+        )}
+        {orientationPermissionError && (
+          <Typography component="div" variant="caption" color="error">
+            Allow permission to use device orientation
+          </Typography>
+        )}
+        {videoPermissionError && (
+          <Typography component="div" variant="caption" color="error">
+            Allow permission to record camera images
+          </Typography>
+        )}
+      </div>
+      <div
+        ref={chunkIconRef}
+        style={{ width: 50, height: 50, margin: 12, border: "1px solid gray" }}
+      >
+        Chunk
+      </div>
+      <div
+        ref={fileIconRef}
+        style={{ width: 50, height: 50, margin: 12, border: "1px solid gray" }}
+      >
+        File
+      </div>
     </div>
   );
 }
